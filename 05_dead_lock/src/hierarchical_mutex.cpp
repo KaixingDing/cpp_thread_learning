@@ -6,7 +6,6 @@ HierarchicalMutex::HierarchicalMutex(unsigned long level)
 void HierarchicalMutex::lock()
 {
     // 检查是否违反层级约束
-    // 当前锁的层级必须大于之前锁的层级
     if (previous_hierarchy_level <= hierarchy_level)
     {
         throw std::runtime_error("Mutex hierarchy violated");

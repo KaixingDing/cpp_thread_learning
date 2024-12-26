@@ -135,7 +135,7 @@ int main()
 {
     ResourceGraph graph;
 
-    std::cout << "Simulating potential deadlock scenario...\n";
+    // std::cout << "Simulating potential deadlock scenario...\n";
     // simulateDeadlockScenario(graph);
 
     demonstrateDeadlockPrevention();
