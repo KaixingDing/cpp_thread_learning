@@ -1,0 +1,316 @@
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <chrono>
+#include <random>
+#include <algorithm>
+#include <set>
+#include <map>
+
+// 资源分配图的数据结构
+class ResourceGraph
+{
+private:
+    std::mutex graph_mutex;
+    std::map<std::thread::id, std::set<std::mutex *>> thread_holds; // 线程持有的锁
+    std::map<std::thread::id, std::set<std::mutex *>> thread_waits; // 线程等待的锁
+
+public:
+    // 记录线程获取锁
+    void acquireLock(std::mutex *mtx)
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex);
+        thread_holds[std::this_thread::get_id()].insert(mtx);
+    }
+
+    // 记录线程释放锁
+    void releaseLock(std::mutex *mtx)
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex);
+        thread_holds[std::this_thread::get_id()].erase(mtx);
+    }
+
+    // 记录线程等待锁
+    void waitForLock(std::mutex *mtx)
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex);
+        thread_waits[std::this_thread::get_id()].insert(mtx);
+    }
+
+    // 取消线程等待锁
+    void stopWaiting(std::mutex *mtx)
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex);
+        thread_waits[std::this_thread::get_id()].erase(mtx);
+    }
+
+    // 检测是否存在死锁
+    bool hasDeadlock()
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex);
+        std::set<std::thread::id> visited;
+        std::set<std::thread::id> recursion_stack;
+
+        // 对每个线程进行深度优先搜索
+        for (const auto &[thread_id, _] : thread_holds)
+        {
+            if (visited.find(thread_id) == visited.end())
+            {
+                if (hasCycle(thread_id, visited, recursion_stack))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+private:
+    // 使用深度优先搜索检测环
+    bool hasCycle(std::thread::id current,
+                  std::set<std::thread::id> &visited,
+                  std::set<std::thread::id> &recursion_stack)
+    {
+        visited.insert(current);
+        recursion_stack.insert(current);
+
+        // 获取当前线程等待的锁
+        const auto &waiting_locks = thread_waits[current];
+
+        // 对于每个等待的锁，查找持有该锁的线程
+        for (const auto &lock : waiting_locks)
+        {
+            for (const auto &[thread_id, held_locks] : thread_holds)
+            {
+                if (held_locks.find(lock) != held_locks.end())
+                {
+                    if (visited.find(thread_id) == visited.end())
+                    {
+                        if (hasCycle(thread_id, visited, recursion_stack))
+                        {
+                            return true;
+                        }
+                    }
+                    else if (recursion_stack.find(thread_id) != recursion_stack.end())
+                    {
+                        return true; // 找到环，表示存在死锁
+                    }
+                }
+            }
+        }
+
+        recursion_stack.erase(current);
+        return false;
+    }
+};
+
+// 智能互斥锁包装器
+class TrackedMutex
+{
+private:
+    std::mutex *mtx;
+    ResourceGraph *graph;
+    bool locked = false;
+
+public:
+    TrackedMutex(std::mutex *m, ResourceGraph *g) : mtx(m), graph(g) {}
+
+    bool try_lock()
+    {
+        graph->waitForLock(mtx);
+        if (mtx->try_lock())
+        {
+            locked = true;
+            graph->stopWaiting(mtx);
+            graph->acquireLock(mtx);
+            return true;
+        }
+        graph->stopWaiting(mtx);
+        return false;
+    }
+
+    void lock()
+    {
+        graph->waitForLock(mtx);
+        mtx->lock();
+        locked = true;
+        graph->stopWaiting(mtx);
+        graph->acquireLock(mtx);
+    }
+
+    void unlock()
+    {
+        if (locked)
+        {
+            graph->releaseLock(mtx);
+            mtx->unlock();
+            locked = false;
+        }
+    }
+
+    ~TrackedMutex()
+    {
+        if (locked)
+        {
+            unlock();
+        }
+    }
+};
+
+// 模拟资源类
+class Resource
+{
+private:
+    int id;
+    std::mutex mutex;
+
+public:
+    Resource(int i) : id(i) {}
+    std::mutex &getMutex() { return mutex; }
+    int getId() const { return id; }
+};
+
+// 死锁预防：分层锁
+class HierarchicalMutex
+{
+private:
+    std::mutex mutex;
+    const unsigned long hierarchy_level;
+    inline static thread_local unsigned long previous_hierarchy_level = 0;
+
+public:
+    explicit HierarchicalMutex(unsigned long level)
+        : hierarchy_level(level) {}
+
+    void lock()
+    {
+        if (previous_hierarchy_level >= hierarchy_level)
+        {
+            throw std::runtime_error("Mutex hierarchy violated");
+        }
+        mutex.lock();
+        previous_hierarchy_level = hierarchy_level;
+    }
+
+    void unlock()
+    {
+        previous_hierarchy_level = hierarchy_level;
+        mutex.unlock();
+    }
+
+    bool try_lock()
+    {
+        if (previous_hierarchy_level <= hierarchy_level)
+        {
+            return false;
+        }
+        if (mutex.try_lock())
+        {
+            previous_hierarchy_level = hierarchy_level;
+            return true;
+        }
+        return false;
+    }
+};
+
+// 模拟可能导致死锁的情况
+void simulateDeadlockScenario(ResourceGraph &graph)
+{
+    Resource res1(1), res2(2);
+    std::vector<std::thread> threads;
+
+    // 线程1：先锁res1，再锁res2
+    threads.emplace_back([&]()
+                         {
+        TrackedMutex lock1(&res1.getMutex(), &graph);
+        TrackedMutex lock2(&res2.getMutex(), &graph);
+
+        lock1.lock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        lock2.lock();
+
+        // 使用资源
+        std::cout << "Thread 1 using resources " 
+                  << res1.getId() << " and " 
+                  << res2.getId() << std::endl;
+
+        lock2.unlock();
+        lock1.unlock(); });
+
+    // 线程2：先锁res2，再锁res1
+    threads.emplace_back([&]()
+                         {
+        TrackedMutex lock2(&res2.getMutex(), &graph);
+        TrackedMutex lock1(&res1.getMutex(), &graph);
+
+        lock2.lock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        lock1.lock();
+
+        // 使用资源
+        std::cout << "Thread 2 using resources " 
+                  << res2.getId() << " and " 
+                  << res1.getId() << std::endl;
+
+        lock1.unlock();
+        lock2.unlock(); });
+
+    // 检测线程
+    std::thread detector([&]()
+                         {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (graph.hasDeadlock()) {
+                std::cout << "Deadlock detected!" << std::endl;
+                break;
+            }
+        } });
+
+    for (auto &t : threads)
+    {
+        t.join();
+    }
+    detector.join();
+}
+
+// 展示死锁预防技术
+void demonstrateDeadlockPrevention()
+{
+    // 1. 使用std::lock同时锁定多个互斥量
+    {
+        std::mutex m1, m2;
+        std::lock(m1, m2); // 原子方式锁定多个互斥量
+        std::lock_guard<std::mutex> lock1(m1, std::adopt_lock);
+        std::lock_guard<std::mutex> lock2(m2, std::adopt_lock);
+    }
+
+    // 2. 使用std::scoped_lock（C++17）
+    {
+        std::mutex m1, m2;
+        std::scoped_lock lock(m1, m2); // 更简洁的方式
+    }
+
+    // 3. 使用分层锁
+    {
+        HierarchicalMutex m1(2000);
+        HierarchicalMutex m2(1000);
+        // 强制按照层级顺序获取锁
+        // m1.lock();  // 会抛出异常
+        m2.lock();
+        m2.unlock();
+    }
+}
+
+int main()
+{
+    ResourceGraph graph;
+
+    // std::cout << "Simulating potential deadlock scenario..." << std::endl;
+    // simulateDeadlockScenario(graph);
+
+    std::cout << "\nDemonstrating deadlock prevention techniques..." << std::endl;
+    demonstrateDeadlockPrevention();
+
+    return 0;
+}
