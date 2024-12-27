@@ -2,6 +2,7 @@
     "files.associations": {
         "chrono": "cpp",
         "shared_mutex": "cpp",
-        "unordered_map": "cpp"
+        "unordered_map": "cpp",
+        "iostream": "cpp"
     }
 }

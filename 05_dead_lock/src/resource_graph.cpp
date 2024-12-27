@@ -94,26 +94,6 @@ bool ResourceGraph::hasCycle(std::thread::id current,
                              std::set<std::thread::id> &visited,
                              std::set<std::thread::id> &recursion_stack)
 {
-<<<<<<< HEAD
-    visited.insert(current);
-    recursion_stack.insert(current);
-
-    const auto &waiting_locks = thread_waits[current];
-
-    for (const auto &lock : waiting_locks)
-    {
-        for (const auto &[thread_id, held_locks] : thread_holds)
-        {
-            if (held_locks.find(lock) != held_locks.end())
-            {
-                if (visited.find(thread_id) == visited.end())
-                {
-                    if (hasCycle(thread_id, visited, recursion_stack))
-                    {
-                        return true;
-                    }
-                }
-=======
     visited.insert(current);         // 标记当前线程为已访问
     recursion_stack.insert(current); // 将当前线程加入递归栈
 
@@ -139,7 +119,6 @@ bool ResourceGraph::hasCycle(std::thread::id current,
                     }
                 }
                 // 如果这个线程已经在递归栈中，说明形成了环
->>>>>>> 1058755 (死锁检测和预防)
                 else if (recursion_stack.find(thread_id) != recursion_stack.end())
                 {
                     return true;
@@ -148,10 +127,7 @@ bool ResourceGraph::hasCycle(std::thread::id current,
         }
     }
 
-<<<<<<< HEAD
-=======
     // 回溯时将当前线程从递归栈中移除
->>>>>>> 1058755 (死锁检测和预防)
     recursion_stack.erase(current);
     return false;
 }
